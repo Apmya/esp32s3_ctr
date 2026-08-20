@@ -197,17 +197,20 @@ float ina219_get_power(void)
 #define NO_PEAK_ABORT_A       0.02f   /* 有效峰值下限 */
 
 #define FAST_RECORD_MS        80      /* 开阀后 80ms 逐点记录(抓上升沿) */
-#define RIPPLE_DENSE_MS       1000    /* 纹波密集采样窗口: PWM 在 IP 结束后立即出现, IH 段 1ms 密集已覆盖
+#define RIPPLE_DENSE_MS       500     /* 纹波密集采样窗口: IH 段 1ms 密集已覆盖主要纹波, dense 仅补尾部
+                                         (缩短以控制总记录<1024, 防止覆盖 fast/TP 段导致 TP 测不出) */    /* 纹波密集采样窗口: PWM 在 IP 结束后立即出现, IH 段 1ms 密集已覆盖
                                          (3000ms 会使总记录 1947>1024 环形容量, 覆盖掉 fast 段的 IP 上升沿,
                                          导致 TP 测不出, 故改回 1000ms) */
 #define DENSE_RECORD_INTERVAL_US 1000 /* 密集段记录间隔 1ms(抽样): 1000ms≈1000点, 每 120ms 周期约 120 点 */
 #define RIPPLE_MAX_PERIOD_US  500000  /* 可测周期上限(µs): 窗口内至少 2 个完整周期才可靠
                                          (旧值 100000 会把 120ms=120000µs 的周期直接过滤掉) */
 #define CHANGE_RECORD_A       0.005f  /* 电流变化 ≥5mA 记录一点 */
+#define CHANGE_RECORD_MIN_US  2000    /* 变化点最小间隔 2ms: 抑制大电流波动段(TP段)的记录风暴,
+                                         防止环形缓冲覆盖 fast/TP 段导致 TP 测不出 */
 #define HEARTBEAT_MS          50      /* 平稳段最长 50ms 记录一点 */
 #define REC_CAPACITY          1024    /* 记录容量 (16B/条, 堆分配 16KB, 勿加大: 32KB 大块分配易失败) */
 
-#define IP_EDGE_RATIO         0.60f   /* ≥60%Ip 视为 IP 保持段 */
+#define IP_EDGE_RATIO         0.90f   /* ≥90%Ip 视为 IP 保持段 */
 #define IH_TAIL_MS            500     /* IH 兜底: 取测量末尾 500ms */
 
 #define RIPPLE_MIN_AMP_RATIO  0.03f   /* 纹波幅度 <3%Ih 判为无纹波 */
@@ -303,12 +306,12 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
         }
 
         /* 记录判定: 首点/快速段逐点; 进入 IH 后(TP结束)按 1ms 密集记录(纹波多出现在保持初段,
-         * 不能再等稳定后才密集); dense 段(稳定后)按 2ms 抽样省容量; 大变化点, 心跳保底 */
+         * 不能再等稳定后才密集); dense 段(稳定后)按 2ms 抽样省容量; 大变化点(≥5mA 且间隔≥2ms), 心跳保底 */
         bool record = (rec_cnt == 0)
                    || (t <= t_fast_end)
                    || (ih_entered && !dense_burst && (t - t_prev) >= DENSE_RECORD_INTERVAL_US)
                    || (dense_burst && (t - t_prev) >= DENSE_RECORD_INTERVAL_US * 2)
-                   || (fabsf(i - i_prev) >= CHANGE_RECORD_A)
+                   || (fabsf(i - i_prev) >= CHANGE_RECORD_A && (t - t_prev) >= CHANGE_RECORD_MIN_US)
                    || ((t - t_prev) >= HEARTBEAT_MS * 1000);
 
         if (record) {
@@ -425,7 +428,7 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
         }
     }
 
-    /* Step 3: TP = 60%Ip 上升沿 → 90%Ip 下降沿 (线性插值) */
+    /* Step 3: TP = 90%Ip 上升沿 → 90%Ip 下降沿 (线性插值) */
     float ip_edge = i_max * IP_EDGE_RATIO;
 
     int rise_j = -1;
@@ -441,7 +444,7 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
     int64_t t_fall = t_end;
 
     if (rise_j < 0) {
-        ESP_LOGW(TAG, "未找到 60%%Ip 上升沿, TP 置 0 (IP=%.3fA)", (double)i_max);
+        ESP_LOGW(TAG, "未找到 90%%Ip 上升沿, TP 置 0 (IP=%.3fA)", (double)i_max);
     } else {
         if (rise_j > 0) {
             t_rise = ina_interp_cross_us(&REC_AT(rise_j - 1), &REC_AT(rise_j), ip_edge);
@@ -530,9 +533,10 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
             bool above = false;
 
             /* 上升沿检测(迟滞过中点 + 去抖 ≥2ms)
-             * 迟滞 = 15% 纹波幅度: 滤掉上升沿处的阶梯/过冲伪沿(如 0→30mA→56mA 阶梯),
-             * 避免把真实周期(如 120ms)切成碎段导致周期一致性检查失败 */
-            float hyst = r_amp * 0.15f;
+             * 迟滞 = 35% 纹波幅度: 高电平段内部的折线/阶梯波只要谷底高于 15% 幅度线(r_lo)
+             * 就不会复位 above, 不产生伪沿; 只有真正的 PWM 低电平(<15%线)才能复位,
+             * 从而测出真正的长周期 PWM, 而不是折线波的短周期 */
+            float hyst = r_amp * 0.35f;
             float r_hi = r_mid + hyst;
             float r_lo = r_mid - hyst;
             for (int j = r_start; j < rec_cnt && rise_n < 32; j++) {
@@ -612,7 +616,7 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
         ESP_LOGW(TAG, "末尾密集记录不足(%d<8), period/duty=0, err=%d", r_cnt, res->ripple_err);
     }
 
-    /* 调试曲线: 记录点(带真实时间戳) */
+    // /* 调试曲线: 记录点(带真实时间戳) */
     // int show = (rec_cnt < 40) ? rec_cnt : 40;
     // ESP_LOGI(TAG, "===== 电流变化记录曲线 (前 %d 条) =====", show);
     // for (int j = 0; j < show; j++) {
