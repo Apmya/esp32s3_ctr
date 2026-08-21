@@ -210,7 +210,7 @@ float ina219_get_power(void)
 #define HEARTBEAT_MS          50      /* 平稳段最长 50ms 记录一点 */
 #define REC_CAPACITY          1024    /* 记录容量 (16B/条, 堆分配 16KB, 勿加大: 32KB 大块分配易失败) */
 
-#define IP_EDGE_RATIO         0.90f   /* ≥90%Ip 视为 IP 保持段 */
+#define IP_EDGE_RATIO         0.60f   /* ≥60%Ip 视为 IP 保持段 */
 #define IH_TAIL_MS            500     /* IH 兜底: 取测量末尾 500ms */
 
 #define RIPPLE_MIN_AMP_RATIO  0.03f   /* 纹波幅度 <3%Ih 判为无纹波 */
@@ -392,12 +392,14 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
     /* Step 1: IP = 全程最大电流 */
     res->Ip = i_max;
 
-    /* Step 2: IH = 最后一次 IH 区间均值; 未进入则兜底取末尾 500ms 平均 */
-    if (t_ih_sustain_start > 0) {
+    /* Step 2: IH = 稳定达成后(dense段)均值 —— 排除 IP 结束后的 0.1A 级过渡平台,
+     * 只统计真正的维持段; 未进入 IH 则兜底取末尾 500ms 平均 */
+    int64_t ih_start = (t_dense_start > t0) ? t_dense_start : t_ih_sustain_start;
+    if (ih_start > 0) {
         float ih_sum = 0.0f;
         int   ih_cnt = 0;
         for (int j = 0; j < rec_cnt; j++) {
-            if (REC_AT(j).t_us >= t_ih_sustain_start) {
+            if (REC_AT(j).t_us >= ih_start) {
                 ih_sum += REC_AT(j).cur;
                 ih_cnt++;
             }
@@ -428,7 +430,7 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
         }
     }
 
-    /* Step 3: TP = 90%Ip 上升沿 → 90%Ip 下降沿 (线性插值) */
+    /* Step 3: TP = 60%Ip 上升沿 → 90%Ip 下降沿 (线性插值) */
     float ip_edge = i_max * IP_EDGE_RATIO;
 
     int rise_j = -1;
@@ -444,7 +446,7 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
     int64_t t_fall = t_end;
 
     if (rise_j < 0) {
-        ESP_LOGW(TAG, "未找到 90%%Ip 上升沿, TP 置 0 (IP=%.3fA)", (double)i_max);
+        ESP_LOGW(TAG, "未找到 60%%Ip 上升沿, TP 置 0 (IP=%.3fA)", (double)i_max);
     } else {
         if (rise_j > 0) {
             t_rise = ina_interp_cross_us(&REC_AT(rise_j - 1), &REC_AT(rise_j), ip_edge);

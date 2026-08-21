@@ -378,8 +378,8 @@ static cJSON *build_property_data(int include_status)
     /* DP105 */ ADD_VT_NUM (data, "temp_outdoor",        (int)round(l_temp  * 100.0),  ts);
 
     /* 测量结果数值 DP (tuya.md 物模型, 倍数换算 + 量程截断) */
-    /* DP108 */ ADD_VT_NUM (data, "IP",      clamp_i((long)round(m.Ip * 1000.0f), 0, 1000),       ts);
-    /* DP109 */ ADD_VT_NUM (data, "IH",      clamp_i((long)round(m.Ih * 1000.0f), 0, 1000),       ts);
+    /* DP108 */ ADD_VT_NUM (data, "IP",      clamp_i((long)round(m.Ip * 1000.0f), 0, 1000000),     ts);
+    /* DP109 */ ADD_VT_NUM (data, "IH",      clamp_i((long)round(m.Ih * 1000.0f), 0, 100000),     ts);
     /* DP110 */ ADD_VT_NUM (data, "TP",      clamp_i((long)round((float)m.Tp / 10.0f), 0, 10000000), ts);
     /* DP111 */ ADD_VT_NUM (data, "Period",  clamp_i((long)rp, 0, 10000),                          ts);
     /* DP112 */ ADD_VT_NUM (data, "Duty",    clamp_i((long)round(rd * 100.0f), 0, 100),            ts);

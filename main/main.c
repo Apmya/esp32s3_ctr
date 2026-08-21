@@ -144,7 +144,7 @@ static void iic_collect_task(void* arg)
 
         /* 只锁数据拷贝，瞬间完成 */
         xSemaphoreTake(data_mutex, portMAX_DELAY);
-        vbus  = local_vbus;
+        vbus  = local_vbus + 0.3f;
         cur   = local_cur;
         power = local_power;
         temp  = local_temp;
