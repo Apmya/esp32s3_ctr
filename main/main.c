@@ -1,199 +1,96 @@
+/* =====================================================================
+ * MAIN —— 应用装配/调度根 (Composition Root)
+ *
+ * 职责边界 (刻意保持"薄"):
+ *   1. 按依赖顺序初始化各层 (存储 → 系统基座 → 配置 → 外设 → 业务服务)
+ *   2. 启动各业务模块的任务属主 (模块自建任务, main 只决定先后顺序)
+ *   3. 全工程唯一的"任务总览表"(见 app_main 底部注释)
+ *
+ * 禁止事项:
+ *   - 不在本文件定义任何共享数据 (所有权在属主模块)
+ *   - 不在本文件写业务任务循环 (采集/配网/生命周期均已迁出)
+ *   - mynvs.h 仅允许在本文件(装配根)为初始化目的被 include,
+ *     业务模块的持久化一律经 *_config 层
+ *
+ * 任务总览 (优先级 | 绑核 | 属主 —— 调整 prio 请到属主模块的 _start 处, 并同步本表):
+ *   ┌────────────────┬──────┬─────┬───────┬──────────────────────────┐
+ *   │ 任务            │ prio │ 核  │ 栈    │ 属主                      │
+ *   ├────────────────┼──────┼─────┼───────┼──────────────────────────┤
+ *   │ key            │  10  │  1  │ 3072  │ SCREEN/key.c              │
+ *   │ valve_meas     │   6  │  1  │ 6144  │ MYMQTT/tuya_dm.c          │
+ *   │ wifi_restart   │   5  │  1  │ 6144  │ WIFI/mywifi.c             │
+ *   │ dm_report      │   5  │  1  │ 8192  │ MYMQTT/tuya_dm.c          │
+ *   │ tuya_lifecycle │   5  │  1  │ 8192  │ MYMQTT/tuya_mqtt.c        │
+ *   │ httpd/ws       │   5  │  -  │ 4096  │ WS_SERVER (esp_http_server)│
+ *   │ mqtt_task      │   5  │  -  │ 6144  │ esp-mqtt (tuya_start内建) │
+ *   │ NimBLE host    │  ─   │  -  │  ─    │ bt 协议栈 (ble_init内建)  │
+ *   │ ap_cfg_watch   │   4  │  1  │ 8192  │ AP_WIFI/ap_wifi.c         │
+ *   │ apcfg(evbit)   │   3  │  1  │ 8192  │ AP_WIFI/ap_wifi.c         │
+ *   │ telemetry      │   3  │  1  │ 8192  │ SENSOR/telemetry.c        │
+ *   │ esp_timer      │ 高   │  -  │  ─    │ IDF守护(回调已零阻塞)      │
+ *   └────────────────┴──────┴─────┴───────┴──────────────────────────┘
+ *   core0 主要留给 esp_wifi/bt 协议栈(22/23); 应用任务全部钉在 core1。
+ *   按键(10) > 测量(6) > 网络业务(5) > 配网(4/3) > 采集(3):
+ *   网络故障无法通过"优先级反转"影响按键响应。
+ * ===================================================================== */
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "nvs_flash.h"
-#include "freertos/semphr.h"
+#include "esp_event.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
-#include "esp_netif.h"
-#include <stdio.h>
-#include <string.h>
 #include "esp_err.h"
 
-#include "ap_wifi.h"    
-#include "myble.h"      
-#include "tuya_mqtt.h"
-#include "tuya_dm.h"  
+#include "mynvs.h"        /* 装配根: 仅用于底层存储初始化 */
+#include "wifi_config.h"
+
 #include "iic.h"
-#include "ina219.h"
 #include "myntc.h"
+#include "telemetry.h"
 #include "myvalve.h"
-#include "mynvs.h"
-#include "led_ws2812.h"
+
+#include "ap_wifi.h"
+#include "tuya_mqtt.h"
+#include "tuya_dm.h"
+#include "myble.h"
+#include "key.h"
 
 #define TAG "MAIN_APP"
 
-#define TASK_PRIOR_APWIFI  4
-#define TASK_PRIOR_WIFI    5
-#define TASK_PRIOR_IIC     3  
-#define TASK_PRIOR_BLE     2  
-
-#define DATA_UPLOAD_PERIOD 2000 
-//=================================================================
-
-SemaphoreHandle_t data_mutex;
-float vbus = 0;
-float cur = 0;
-float power = 0;
-float temp = 0;
-
-/**
- * @brief ble配速
- */
-static void ble_task(void* arg)
-{
-    ble_init();  
-    while(1)
-    {
-        if (wifi_is_connected)
-        {
-            vTaskDelay(pdMS_TO_TICKS(3000));
-        }
-        else 
-        {
-            vTaskDelay(pdMS_TO_TICKS(100)); 
-        }
-    }
-
-}
-
-/**
- * @brief AP网页配网任务：无WiFi时启动热点网页
- */
-static void ap_cfg_task(void* arg)
-{
-    bool is_ap_active = false; // 记录AP服务是否已启动
-
-    while(1)
-    {
-        if ((strlen(g_wifi_ssid) == 0 || !wifi_is_connected) && !is_ap_active)
-        {
-            ESP_LOGW(TAG, "WiFi未连接,启动AP网页配网...");
-            ap_wifi_apcfg(); 
-            is_ap_active = true; 
-        }
-        else if (wifi_is_connected && is_ap_active)
-        {
-            ESP_LOGI(TAG, "WiFi已连接,关闭AP配网服务...");
-            ap_wifi_stop();
-            is_ap_active = false; 
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(3000)); 
-    }
-}
-
-/**
- * @brief Tuya MQTT连接管理任务
- *
- * wifi_is_connected 在 WIFI_EVENT_STA_CONNECTED 时置位（L2 已连），
- * 但此时 IP 可能尚未分配，需等待 IP_EVENT_STA_GOT_IP 后才能发起 TCP 连接。
- */
-static void wifi_tuya_task(void* arg)
-{
-    bool is_tuya_started = false;
-    while(1)
-    {
-        if (wifi_is_connected && !is_tuya_started)
-        {
-            /* 等 IP 就绪 — 若连接已断开则放弃本轮 */
-            for (int i = 0; i < 50 && wifi_is_connected; i++) {
-                esp_netif_ip_info_t ip;
-                esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                if (sta && esp_netif_get_ip_info(sta, &ip) == ESP_OK) {
-                    if (ip.ip.addr != 0) break;   /* IP 已分配 */
-                }
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-
-            if (!wifi_is_connected) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                continue;
-            }
-
-            ESP_LOGI(TAG, "WiFi已联网,启动Tuya MQTT...");
-            tuya_start();
-            is_tuya_started = true;
-        }
-
-        /* WiFi 断开 → 销毁 MQTT 客户端，防止旧实例自动重连时与下次新建的实例互踢 */
-        if (!wifi_is_connected && is_tuya_started)
-        {
-            tuya_stop();
-            is_tuya_started = false;
-        }
-
-        /* MQTT 断连由 esp_mqtt 内置自动重连处理，不再手动重启：
-         * 手动重启会创建多个相同 clientId 的客户端，被云端互踢导致反复断连 */
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-/**
- * @brief IIC采集任务：电压/电流/功率/温度
- * 读取在锁外(INA219 内部自带互斥), 仅数据拷贝短锁, 避免 I2C 超时卡住 MQTT 回调
- */
-static void iic_collect_task(void* arg)
-{
-    while(1)
-    {
-        float local_vbus  = ina219_get_bus_voltage();
-        float local_cur   = ina219_get_current();
-        float local_power = ina219_get_power();
-        float local_temp  = ntc_read_temperature();
-
-        /* 只锁数据拷贝，瞬间完成 */
-        xSemaphoreTake(data_mutex, portMAX_DELAY);
-        vbus  = local_vbus + 0.3f;
-        cur   = local_cur;
-        power = local_power;
-        temp  = local_temp;
-        xSemaphoreGive(data_mutex);
-        vTaskDelay(pdMS_TO_TICKS(DATA_UPLOAD_PERIOD));
-    }
-}
-
 void app_main(void)
 {
-    // 1. NVS 初始化
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    /* ── 阶段1: 底层存储层 ─────────────────────────────── */
+    ESP_ERROR_CHECK(mynvs_init());          /* 取代原手写 nvs_flash_init 重复块 */
+
+    /* ── 阶段2: 系统基座 ───────────────────────────────── */
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    /* ── 阶段3: 配置装载 (NVS就绪后、业务任务启动前) ───── */
+    ESP_ERROR_CHECK(wifi_config_load());
     {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-    ESP_LOGI(TAG, "NVS初始化完成");
-    
-    wifi_nvs_load();
-    ESP_LOGI(TAG, "NVS加载WiFi配置: SSID=%s", g_wifi_ssid);
-
-    // 2. 系统基础初始化
-    esp_event_loop_create_default();
-    data_mutex = xSemaphoreCreateMutex();
-    if(data_mutex == NULL){
-        ESP_LOGE(TAG,"mutex create fail");
-        vTaskDelete(NULL);
+        wifi_cred_t cred;
+        wifi_config_get_credential(&cred);
+        ESP_LOGI(TAG, "加载WiFi配置: SSID=%s", cred.ssid);
     }
 
-    // 3. 外设与协议栈初始化
-    
-    ap_wifi_init();
-    tuya_dm_init();
-    iic_dev_start();
-    ntc_init();          /* NTC 温度: ADC1_CH7(GPIO8), 10kΩ/B3950 */
-    valve_init();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    /* ── 阶段4: 驱动与外设初始化 ───────────────────────── */
+    iic_dev_start();                        /* I2C总线 + INA219 */
+    ntc_init();                             /* NTC: 引脚/通道见 board.h */
+    valve_init();                           /* 电磁阀 GPIO9 */
+    ESP_ERROR_CHECK(key_init());            /* KEY1~5 输入+消抖任务 */
+    /* TODO(你): lcd_init(); 屏幕驱动完成后加入本阶段 */
 
-    // 4. 创建 FreeRTOS 任务
-    xTaskCreatePinnedToCore(ble_task,         "ble_task", 6144, NULL, TASK_PRIOR_BLE, NULL,1); 
-    xTaskCreatePinnedToCore(ap_cfg_task,      "ap_cfg_task", 8192, NULL, TASK_PRIOR_APWIFI, NULL,1); 
-    xTaskCreatePinnedToCore(wifi_tuya_task,   "wifi_tuya",   8192, NULL, TASK_PRIOR_WIFI,   NULL,1);
-    xTaskCreatePinnedToCore(iic_collect_task, "iic_collect", 8192, NULL, TASK_PRIOR_IIC,    NULL,1); 
-    ESP_LOGI(TAG, "系统初始化完成,进入主循环");
+    /* ── 阶段5: 业务服务装配 (顺序 = 依赖顺序) ─────────── */
+    ap_wifi_init();            /* wifista+AP+WS, 注册 wifi_config apply 钩子 */
+    tuya_dm_init();            /* 物模型: ws2812/测量任务/上报任务/定时器 */
+    telemetry_start();         /* 传感器采集环 (2s) */
+    ap_wifi_watch_start();     /* 配网策略环: 断网开AP, 连网关AP */
+    tuya_lifecycle_start();    /* MQTT生命周期环: 联网起MQTT, 断连销毁 */
 
-    while(1) 
-    {
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
+    /* BLE 最后开: 手机连上即可写特征值配网, 此时全部依赖已就绪;
+     * (原 ble_task 的 init+空转延时循环已删 — 属无效任务) */
+    ESP_ERROR_CHECK(ble_init());
+
+    ESP_LOGI(TAG, "系统装配完成");
+
+    /* app_main 返回后其任务栈会被系统回收, 常驻工作全部在上面的模块任务中 */
 }

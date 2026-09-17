@@ -1,106 +1,285 @@
 #include "mynvs.h"
-#include "nvs_flash.h"
+
 #include <string.h>
+
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "esp_log.h"
 
-
-static const char *TAG = "NVS_WIFI";
-#define WIFI_NVS_NAMESPACE "wifi_config"
-#define NVS_KEY_SSID       "ssid_store"
-#define NVS_KEY_PWD        "pwd_store"
-
-char g_wifi_ssid[SSID_MAX_LEN] = {0};
-char g_wifi_passwd[PWD_MAX_LEN] = {0};
+static const char *TAG = "MYNVS";
 
 
-/**
- * @brief 上电读取保存的WiFi
- */
-esp_err_t wifi_nvs_load(void)
+/* 内部工具: 统一 open, 失败打日志 */
+static esp_err_t ns_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *h)
 {
-    nvs_handle_t nvs_hdl;
-    esp_err_t ret = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &nvs_hdl);
-    if(ret != ESP_OK)
+    if (ns == NULL || h == NULL)
     {
-        memset(g_wifi_ssid, 0, SSID_MAX_LEN);
-        memset(g_wifi_passwd, 0, PWD_MAX_LEN);
-        return ret;
-    }
-
-    size_t str_len = SSID_MAX_LEN;
-    ret = nvs_get_str(nvs_hdl, NVS_KEY_SSID, g_wifi_ssid, &str_len);
-    if(ret != ESP_OK)
-    {
-        memset(g_wifi_ssid, 0, SSID_MAX_LEN);
-    }
-
-    str_len = PWD_MAX_LEN;
-    ret = nvs_get_str(nvs_hdl, NVS_KEY_PWD, g_wifi_passwd, &str_len);
-    if(ret != ESP_OK)
-    {
-        memset(g_wifi_passwd, 0, PWD_MAX_LEN);
-    }
-
-    nvs_close(nvs_hdl);
-
-    if(strlen(g_wifi_ssid) > 0)
-    {
-        ESP_LOGI(TAG, "上电加载WiFi SSID:%s", g_wifi_ssid);
-    }
-    
-    return ESP_OK;
-}
-
-/**
- * @brief 保存WiFi账号密码到Flash
- */
-esp_err_t wifi_nvs_save(const char* ssid, const char* pwd)
-{
-    if(ssid == NULL || pwd == NULL)
-    {
-        ESP_LOGE(TAG, "保存WiFi参数为空");
         return ESP_ERR_INVALID_ARG;
     }
 
-    nvs_handle_t nvs_hdl;
-    esp_err_t ret = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs_hdl);
-    if(ret != ESP_OK)
+    esp_err_t ret = nvs_open(ns, mode, h);
+
+    if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "NVS打开失败");
-        return ret;
+        ESP_LOGE(TAG, "打开NVS[%s]失败: %s", ns, esp_err_to_name(ret));
     }
 
-    nvs_set_str(nvs_hdl, NVS_KEY_SSID, ssid);
-    nvs_set_str(nvs_hdl, NVS_KEY_PWD, pwd);
-    ret = nvs_commit(nvs_hdl);
-    nvs_close(nvs_hdl);
-
-    if(ret == ESP_OK)
-    {
-        ESP_LOGI(TAG, "WiFi已保存至Flash");
-        strncpy(g_wifi_ssid, ssid, SSID_MAX_LEN - 1);
-        g_wifi_ssid[SSID_MAX_LEN - 1] = '\0';
-
-        strncpy(g_wifi_passwd, pwd, PWD_MAX_LEN - 1);
-        g_wifi_passwd[PWD_MAX_LEN - 1] = '\0';
-    }
     return ret;
 }
 
 
 /**
- * @brief 清空存储的flash
+ * @brief 初始化 NVS
  */
-void wifi_nvs_clear(void)
+esp_err_t mynvs_init(void)
 {
-    nvs_handle_t nvs_hdl;
-    if(nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs_hdl) == ESP_OK)
+    esp_err_t ret = nvs_flash_init();
+
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
-        nvs_erase_all(nvs_hdl);
-        nvs_commit(nvs_hdl);
-        nvs_close(nvs_hdl);
+        ESP_LOGW(TAG, "NVS分区需要擦除");
+
+        ret = nvs_flash_erase();
+
+        if (ret != ESP_OK)
+        {
+            return ret;
+        }
+
+        ret = nvs_flash_init();
     }
-    memset(g_wifi_ssid, 0, SSID_MAX_LEN);
-    memset(g_wifi_passwd, 0, PWD_MAX_LEN);
-    ESP_LOGI(TAG, "已清空保存的WiFi信息");
+
+    if (ret == ESP_OK)
+    {
+        ESP_LOGI(TAG, "NVS初始化成功");
+    }
+
+    return ret;
+}
+
+
+esp_err_t mynvs_save_string(const char *ns, const char *key, const char *value)
+{
+    if (ns == NULL || key == NULL || value == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    ret = nvs_set_str(handle, key, value);
+
+    if (ret == ESP_OK)
+    {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_load_string(const char *ns, const char *key, char *value, size_t max_len)
+{
+    if (ns == NULL || key == NULL || value == NULL || max_len == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READONLY, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    size_t length = max_len;
+
+    ret = nvs_get_str(handle, key, value, &length);
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_save_u32(const char *ns, const char *key, uint32_t value)
+{
+    if (ns == NULL || key == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    ret = nvs_set_u32(handle, key, value);
+
+    if (ret == ESP_OK)
+    {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_load_u32(const char *ns, const char *key, uint32_t *value)
+{
+    if (ns == NULL || key == NULL || value == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READONLY, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    ret = nvs_get_u32(handle, key, value);
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_save_blob(const char *ns, const char *key, const void *data, size_t len)
+{
+    if (ns == NULL || key == NULL || data == NULL || len == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    ret = nvs_set_blob(handle, key, data, len);
+
+    if (ret == ESP_OK)
+    {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_load_blob(const char *ns, const char *key, void *buf, size_t max_len, size_t *out_len)
+{
+    if (ns == NULL || key == NULL || buf == NULL || max_len == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READONLY, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    size_t length = max_len;
+
+    ret = nvs_get_blob(handle, key, buf, &length);
+
+    if (ret == ESP_OK && out_len != NULL)
+    {
+        *out_len = length;
+    }
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_delete_key(const char *ns, const char *key)
+{
+    if (ns == NULL || key == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    ret = nvs_erase_key(handle, key);
+
+    if (ret == ESP_OK)
+    {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    return ret;
+}
+
+
+esp_err_t mynvs_clear_namespace(const char *ns)
+{
+    if (ns == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+
+    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    ret = nvs_erase_all(handle);
+
+    if (ret == ESP_OK)
+    {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    return ret;
 }

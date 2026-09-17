@@ -3,10 +3,8 @@
 #include "cJSON.h"
 #include "ina219.h"
 
-/* 传感器全局变量（main.c 定义） */
-extern float vbus, cur, power, temp;
-extern SemaphoreHandle_t data_mutex;
-extern SemaphoreHandle_t cur_str_mutex;
+/* 传感器聚合数据(电压/电流/功率/温度)的所有权已迁至 SENSOR/telemetry.h,
+ * 本头文件不再导出任何共享数据 */
 
 void tuya_dm_init(void);
 void tuya_property_handle(cJSON *data_obj);

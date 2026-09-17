@@ -6,9 +6,13 @@ set(src_dirs
             MYMQTT
             MYNVS
             WIFI
-            MYBLE)
+            AP_WIFI
+            WS_SERVER
+            MYBLE
+            SCREEN)
 
 set(include_dirs
+            BOARD
             LED
             VALUE
             IIC
@@ -16,7 +20,10 @@ set(include_dirs
             MYMQTT
             MYNVS
             WIFI
-            MYBLE)
+            AP_WIFI
+            WS_SERVER
+            MYBLE
+            SCREEN)
 
 set(requires
             spiffs
@@ -31,4 +38,3 @@ set(requires
 idf_component_register(SRC_DIRS ${src_dirs} INCLUDE_DIRS ${include_dirs} REQUIRES ${requires})
 
 component_compile_options(-ffast-math -O3 -Wno-error=format=-Wno-format)
-

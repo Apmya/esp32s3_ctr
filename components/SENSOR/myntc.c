@@ -66,5 +66,5 @@ void ntc_init(void)
     adc1_config_width(ADC_WIDTH_BIT_12);                           /* 12位分辨率 */
     adc1_config_channel_atten(NTC_ADC_CHANNEL, ADC_ATTEN_DB_11);   /* 0~3.1V量程 */
     ESP_LOGI(TAG, "NTC初始化完成: GPIO%d, 10kΩ/B3950, 每次采样%d次取平均",
-             NTC_ADC_GPIO, NTC_ADC_SAMPLES);
+             NTC_PIN, NTC_ADC_SAMPLES);
 }

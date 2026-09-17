@@ -191,6 +191,7 @@
         function onMessage(event) {
             var state;
 			const data = JSON.parse(event.data);
+            if (!data || !data.wifi_list) return;   
             console.log(event.data);
 			const wifiListContainer = document.getElementById('wifi-list-container');
             const wifiList = document.getElementById('wifi-list');
@@ -242,7 +243,7 @@
                 btn.disabled = false;
                 document.getElementById('loading').style.display = 'none';
                 showStatus('扫描Wi-Fi网络失败，请稍后重试', 'error');
-                }, 20*1000);
+                }, 40*1000);
         });
         
         // 提交网络配置

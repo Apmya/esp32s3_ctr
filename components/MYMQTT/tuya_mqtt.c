@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "esp_crt_bundle.h"
 #include "esp_sntp.h"
+#include "esp_netif.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -12,12 +13,20 @@
 #include "tuya_mqtt.h"
 #include "tuya_dm.h"
 #include "tuya_token.h"
+#include "mywifi.h"
 
 #define TAG  "tuya_mqtt"
 
 static esp_mqtt_client_handle_t mqtt_handle = NULL;
 static bool sntp_inited = false;
-bool tuya_mqtt_is_connected = false;
+
+/* 连接状态: 数据唯一主人在本文件, 外部经 tuya_mqtt_is_connected() 查询 */
+static bool s_mqtt_connected = false;
+
+bool tuya_mqtt_is_connected(void)
+{
+    return s_mqtt_connected;
+}
 
 /* ── 前向声明 ── */
 static void tuya_subscribe(void);
@@ -46,6 +55,26 @@ static void sntp_init_once(void)
 }
 
 /* ════════════════════════════════════════════════════════════
+ * 事件上下文专用: 异步入队发布 (enqueue 即返回)
+ *
+ * esp_mqtt_client_publish(QoS1) 会同步等待本条消息的 PUBACK,
+ * 而 ACK 恰恰要由 mqtt 任务自己处理 —— 在事件回调(=mqtt任务上下文)里
+ * 调用等于自己等自己, 弱网时会卡死整条下行分发。
+ * 因此事件回调上下文内的一切发布必须走 enqueue。
+ * ════════════════════════════════════════════════════════════ */
+static esp_err_t mqtt_enqueue_publish(const char *topic, const char *payload)
+{
+    if (mqtt_handle == NULL || topic == NULL || payload == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int idx = esp_mqtt_client_enqueue(mqtt_handle, topic, payload,
+                                      strlen(payload), 1, 0, false);
+    return (idx >= 0) ? ESP_OK : ESP_FAIL;
+}
+
+/* ════════════════════════════════════════════════════════════
  * MQTT 事件回调
  * ════════════════════════════════════════════════════════════ */
 static void tuya_mqtt_event_handler(void *handler_args,
@@ -59,16 +88,22 @@ static void tuya_mqtt_event_handler(void *handler_args,
 
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT 已连接");
-        tuya_mqtt_is_connected = true;
+        s_mqtt_connected = true;
         tuya_subscribe();
 
-        /* 上电自动上报一次属性 */
+        /* 上电自动上报一次属性 (事件上下文 → 异步入队, 不自等待) */
         {
             cJSON *js = tuya_property_upload();
             if (js) {
                 char *p = cJSON_PrintUnformatted(js);
-                tuya_post_property_data(p);
-                cJSON_free(p);
+                if (p) {
+                    char topic[128];
+                    snprintf(topic, sizeof(topic),
+                             "tylink/%s/thing/property/report", TUYA_DEVICE_ID);
+                    ESP_LOGI(TAG, "上报: %s", p);
+                    mqtt_enqueue_publish(topic, p);
+                    cJSON_free(p);
+                }
                 cJSON_Delete(js);
             }
         }
@@ -76,7 +111,7 @@ static void tuya_mqtt_event_handler(void *handler_args,
 
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT 已断开");
-        tuya_mqtt_is_connected = false;
+        s_mqtt_connected = false;
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
@@ -189,7 +224,7 @@ void tuya_stop(void)
         esp_mqtt_client_destroy(mqtt_handle);
         mqtt_handle = NULL;
     }
-    tuya_mqtt_is_connected = false;
+    s_mqtt_connected = false;
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -198,7 +233,10 @@ void tuya_stop(void)
  * ════════════════════════════════════════════════════════════ */
 esp_err_t tuya_post_property_data(const char *data)
 {
-    if (!mqtt_handle) return ESP_ERR_INVALID_STATE;
+    /* 断连快速返回: esp_mqtt_client_publish(QoS1) 在链路半开时可阻塞秒级,
+     * 调用方均为普通任务上下文, 绝不能在这里陪网络干等 */
+    if (!mqtt_handle || !s_mqtt_connected) return ESP_ERR_INVALID_STATE;
+    if (!data) return ESP_ERR_INVALID_ARG;
 
     char topic[128];
     snprintf(topic, sizeof(topic),
@@ -216,7 +254,8 @@ esp_err_t tuya_post_action_response(const char *msgId,
                                      const char *actionCode,
                                      const char *measure_data_hex)
 {
-    if (!mqtt_handle) return ESP_ERR_INVALID_STATE;
+    /* 同 tuya_post_property_data: 未连接立即返回, 不进入 publish 阻塞路径 */
+    if (!mqtt_handle || !s_mqtt_connected) return ESP_ERR_INVALID_STATE;
 
     char topic[128];
     snprintf(topic, sizeof(topic),
@@ -284,8 +323,65 @@ static void tuya_property_set_response(const char *msgId, int code)
 
     char *p = cJSON_PrintUnformatted(rsp);
     if (p) {
-        esp_mqtt_client_publish(mqtt_handle, topic, p, strlen(p), 1, 0);
+        /* 属性设置应答在事件回调上下文 → 必须异步入队 */
+        mqtt_enqueue_publish(topic, p);
         cJSON_free(p);
     }
     cJSON_Delete(rsp);
+}
+
+/* ════════════════════════════════════════════════════════════
+ * MQTT 生命周期环 (原 main.c wifi_tuya_task 迁入)
+ *
+ * wifi_is_connected() 在 WIFI_EVENT_STA_CONNECTED 时置位（L2 已连），
+ * 但此时 IP 可能尚未分配，需等待 IP_EVENT_STA_GOT_IP 后才能发起 TCP 连接。
+ * ════════════════════════════════════════════════════════════ */
+static void tuya_lifecycle_task(void *arg)
+{
+    (void)arg;
+    bool is_tuya_started = false;
+
+    while (1)
+    {
+        if (wifi_is_connected() && !is_tuya_started)
+        {
+            /* 等 IP 就绪 — 若连接已断开则放弃本轮 */
+            for (int i = 0; i < 50 && wifi_is_connected(); i++) {
+                esp_netif_ip_info_t ip;
+                esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                if (sta && esp_netif_get_ip_info(sta, &ip) == ESP_OK) {
+                    if (ip.ip.addr != 0) break;   /* IP 已分配 */
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+
+            if (!wifi_is_connected()) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
+
+            ESP_LOGI(TAG, "WiFi已联网,启动Tuya MQTT...");
+            tuya_start();
+            is_tuya_started = true;
+        }
+
+        /* WiFi 断开 → 销毁 MQTT 客户端，防止旧实例自动重连时与下次新建的实例互踢 */
+        if (!wifi_is_connected() && is_tuya_started)
+        {
+            tuya_stop();
+            is_tuya_started = false;
+        }
+
+        /* MQTT 断连由 esp_mqtt 内置自动重连处理，不再手动重启：
+         * 手动重启会创建多个相同 clientId 的客户端，被云端互踢导致反复断连 */
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+void tuya_lifecycle_start(void)
+{
+    xTaskCreatePinnedToCore(tuya_lifecycle_task, "tuya_lifecycle",
+                            8192, NULL, 5, NULL, 1);
+    ESP_LOGI(TAG, "MQTT生命周期环已启动");
 }

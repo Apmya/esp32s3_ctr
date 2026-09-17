@@ -1,8 +1,11 @@
-#include "iic.h"
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+
+#include "iic.h"
 #include "ina219.h"
-#include "esp_log.h"
+#include "board.h"
+
 
 #define TAG     "IIC"
 
@@ -12,9 +15,9 @@ void iic_init(void)
         .clk_flags = 0,
         .master.clk_speed = 100000,
         .mode = I2C_MODE_MASTER,
-        .scl_io_num = GPIO_NUM_4,
+        .scl_io_num = I2C_PIN_SCL,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,   /* 打开内部上拉: 模块断开时总线不悬空 */
-        .sda_io_num = GPIO_NUM_5,
+        .sda_io_num = I2C_PIN_SDA,
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
     };
     ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_structure));

@@ -5,7 +5,8 @@
 #include "esp_wifi.h"
 #include "esp_err.h"
 
-extern bool wifi_is_connected;
+/* WiFi STA 连接状态查询 (数据私有于 mywifi.c, 只读 API) */
+bool wifi_is_connected(void);
 
 typedef void (*p_wifi_scan_cb)(int num ,wifi_ap_record_t *ap_records);
 

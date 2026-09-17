@@ -3,8 +3,9 @@
 
 #include <stdbool.h>
 #include "driver/ledc.h"
+#include "board.h"
 
-#define VALVE_GPIO_PIN          GPIO_NUM_9
+/* 引脚 VALVE_PIN 唯一来源在 board.h, 本头文件不再定义引脚 */
 #define VALVE_LEDC_CHANNEL      LEDC_CHANNEL_0
 #define VALVE_LEDC_TIMER        LEDC_TIMER_0
 #define VALVE_PWM_FREQ_HZ       500

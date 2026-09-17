@@ -9,7 +9,9 @@
 
 #include "myvalve.h"
 #include "tuya_dm.h"
+#include "telemetry.h"
 #include "led_ws2812.h"
+#include "board.h"
 #include "tuya_mqtt.h"
 #include "esp_timer.h"
 
@@ -38,12 +40,12 @@ static long clamp_i(long v, long lo, long hi)
 /* 周期上报: 仅数值 DP, 不含字符串/测量开关 */
 static cJSON *tuya_property_upload_periodic(void);
 
-SemaphoreHandle_t cur_str_mutex = NULL;
-ina219_valve_curr_t cur_str;
+/* ── 最近一次阀门测量结果: 数据唯一主人在本文件 ── */
+static SemaphoreHandle_t cur_str_mutex = NULL;
+static ina219_valve_curr_t cur_str;
 static bool s_measure_valid = false;   /* 最近一次测量是否有效(VBUS≥5V, 采样电阻/供电正常) */
 
-/* 传感器本地缓存 */
-static float l_vbus, l_cur, l_power, l_temp;
+/* 快照读数经 telemetry_snapshot() 获取, 本文件不再持有传感器缓存 */
 
 /* ── 时间戳 ── */
 static int64_t now_ms(void)
@@ -53,33 +55,76 @@ static int64_t now_ms(void)
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-/* ── 开关ON 4s后: 上报一次当前电流/电压/功率/温度状态 ──
- * esp_timer 回调中仅做轻量操作: 快照数据(内部加锁) + MQTT publish(异步, 不阻塞) */
-static void status_report_timer_cb(void *arg)
+/* ══════════════════════════════════════════════════════════
+ * 上报专用任务: 所有 cJSON 组包 + MQTT 发布都在这里做
+ *
+ * esp_timer 回调运行于"定时器守护任务"(全系统共享的高优先级任务),
+ * 在里面做秒级阻塞的网络发布 = WiFi重连定时器/按键消抖定时器等所有
+ * esp_timer 被连带拖住。因此定时器回调只发 notify (µs级),
+ * 真正的上报在本任务(低优先级)里慢慢做。
+ * ══════════════════════════════════════════════════════════ */
+#define RPT_EVT_SWITCH    (1u << 0)   /* 开关ON后4s一次性上报 */
+#define RPT_EVT_PERIODIC  (1u << 1)   /* 5s周期上报 */
+
+static TaskHandle_t s_report_task = NULL;
+
+static void dm_report_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "开关已开启4s, 上报当前电参数状态");
-    cJSON *js = tuya_property_upload();
-    if (js) {
-        char *payload = cJSON_PrintUnformatted(js);
-        tuya_post_property_data(payload);
-        cJSON_free(payload);
-        cJSON_Delete(js);
+    uint32_t bits;
+
+    while (1)
+    {
+        xTaskNotifyWait(0, 0xFFFFFFFFu, &bits, portMAX_DELAY);
+
+        /* 未连接直接丢弃: 4s上报下次开关还会再触发, 周期上报5s后来 */
+        if (!tuya_mqtt_is_connected())
+        {
+            continue;
+        }
+
+        if (bits & RPT_EVT_SWITCH)
+        {
+            ESP_LOGI(TAG, "开关已开启4s, 上报当前电参数状态");
+            cJSON *js = tuya_property_upload();
+            if (js) {
+                char *payload = cJSON_PrintUnformatted(js);
+                tuya_post_property_data(payload);
+                cJSON_free(payload);
+                cJSON_Delete(js);
+            }
+        }
+
+        if (bits & RPT_EVT_PERIODIC)
+        {
+            cJSON *js = tuya_property_upload_periodic();
+            if (js) {
+                char *payload = cJSON_PrintUnformatted(js);
+                tuya_post_property_data(payload);
+                cJSON_free(payload);
+                cJSON_Delete(js);
+            }
+        }
     }
 }
 
-/* ── 5s 周期上报: 只发数值 DP(不含字符串, 字符串仅在事件时上报) ── */
+/* ── 开关ON 4s后: 通知上报任务 (回调上下文仅做 notify, µs 级返回) ── */
+static void status_report_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s_report_task)
+    {
+        xTaskNotify(s_report_task, RPT_EVT_SWITCH, eSetBits);
+    }
+}
+
+/* ── 每 5s: 通知上报任务 (是否真正发布由任务内判连接状态) ── */
 static void periodic_report_timer_cb(void *arg)
 {
     (void)arg;
-    if (!tuya_mqtt_is_connected) return;   /* 未连接不重复入队 */
-
-    cJSON *js = tuya_property_upload_periodic();
-    if (js) {
-        char *payload = cJSON_PrintUnformatted(js);
-        tuya_post_property_data(payload);
-        cJSON_free(payload);
-        cJSON_Delete(js);
+    if (s_report_task)
+    {
+        xTaskNotify(s_report_task, RPT_EVT_PERIODIC, eSetBits);
     }
 }
 
@@ -194,12 +239,16 @@ static void valve_measure_task(void *arg)
  * ════════════════════════════════════════════════════════════ */
 void tuya_dm_init(void)
 {
-    ws2812_init(GPIO_NUM_48, 1, &ws2812_led);
+    ws2812_init(WS2812_PIN, 1, &ws2812_led);
     led_indicate(128, 0, 0);  /* 红灯=阀门关 */
 
     xTaskCreatePinnedToCore(valve_measure_task, "valve_meas",
                              6144, NULL, 6, &valve_meas_hdl, 1);
     cur_str_mutex = xSemaphoreCreateMutex();
+
+    /* 上报任务: 接管全部 JSON组包+MQTT发布 (低优先级, esp_timer回调只做notify) */
+    xTaskCreatePinnedToCore(dm_report_task, "dm_report",
+                            8192, NULL, 5, &s_report_task, 1);
 
     /* 开关ON 4s后上报电参数状态: 一次性定时器, 由 switch 下发启动/取消 */
     esp_timer_create_args_t targs = {
@@ -318,13 +367,9 @@ static cJSON *build_property_data(int include_status)
 {
     int64_t ts = now_ms();
 
-    /* 快照传感器数据 */
-    xSemaphoreTake(data_mutex, portMAX_DELAY);
-    l_vbus  = vbus;
-    l_cur   = cur;
-    l_power = power;
-    l_temp  = temp;
-    xSemaphoreGive(data_mutex);
+    /* 快照传感器数据: 经 telemetry API 取同代快照(µs级锁) */
+    telemetry_t tel;
+    telemetry_snapshot(&tel);
 
     /* 快照最近一次测量结果 (IP/IH/TP/Period/Duty) */
     ina219_valve_curr_t m;
@@ -372,10 +417,10 @@ static cJSON *build_property_data(int include_status)
     } while(0)
 
     /* DP101 */ ADD_VT_BOOL(data, "switch",              valve_state, ts);
-    /* DP102 */ ADD_VT_NUM (data, "voltage_current",     (int)round(l_vbus  * 100.0),  ts);
-    /* DP103 */ ADD_VT_NUM (data, "cur_current",         clamp_i((long)round(l_cur * 1000.0f), 0, 99999), ts);
-    /* DP104 */ ADD_VT_NUM (data, "power_current",       (int)round(l_power * 100.0),  ts);
-    /* DP105 */ ADD_VT_NUM (data, "temp_outdoor",        (int)round(l_temp  * 100.0),  ts);
+    /* DP102 */ ADD_VT_NUM (data, "voltage_current",     (int)round(tel.vbus_v  * 100.0),  ts);
+    /* DP103 */ ADD_VT_NUM (data, "cur_current",         clamp_i((long)round(tel.cur_a * 1000.0f), 0, 99999), ts);
+    /* DP104 */ ADD_VT_NUM (data, "power_current",       (int)round(tel.power_w * 100.0),  ts);
+    /* DP105 */ ADD_VT_NUM (data, "temp_outdoor",        (int)round(tel.temp_c  * 100.0),  ts);
 
     /* 测量结果数值 DP (tuya.md 物模型, 倍数换算 + 量程截断) */
     /* DP108 */ ADD_VT_NUM (data, "IP",      clamp_i((long)round(m.Ip * 1000.0f), 0, 1000000),     ts);

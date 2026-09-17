@@ -11,8 +11,7 @@
 
 #include "myble.h"
 #include "mywifi.h"
-#include "mynvs.h"
-#include "ap_wifi.h"
+#include "wifi_config.h"
 
 #define TAG "NimBLE"
 #define DEVICE_NAME "ESP32S3-NimBLE"
@@ -20,8 +19,14 @@ static bool ble_adv_active = false;
 static uint16_t rx_value_handler;
 static uint16_t tx_value_handler;
 
-// 状态标记
-bool ble_connected_flag = false;
+// 状态标记: 数据主人在本文件, 未对外暴露
+static bool ble_connected_flag = false;
+
+/* ── BLE 配网私有暂存区 ──
+ * 0x30 先到 SSID, 0x31 后到密码: 本模块暂存, 攒齐后一次性交
+ * wifi_config_apply() 落盘+触发重连。WiFi 凭据缓存不归本模块碰。 */
+static char s_stage_ssid[WIFI_SSID_MAX_LEN] = {0};
+static char s_stage_pwd[WIFI_PWD_MAX_LEN]   = {0};
 
 
 /**
@@ -53,32 +58,41 @@ static int gatt_event_handler(uint16_t conn_handle, uint16_t attr_handle,struct 
             switch (cmd)
             {
                 case 0x30:  // 0
-                    // WiFi名称
-                    memset(g_wifi_ssid, 0, SSID_MAX_LEN);
-                    strncpy(g_wifi_ssid, recv_buf, SSID_MAX_LEN - 1);
-                    ESP_LOGI(TAG, "Get WiFi SSID: [%s]", g_wifi_ssid);
+                    // WiFi名称 → 私有暂存区
+                    memset(s_stage_ssid, 0, sizeof(s_stage_ssid));
+                    strncpy(s_stage_ssid, recv_buf, sizeof(s_stage_ssid) - 1);
+                    ESP_LOGI(TAG, "Get WiFi SSID: [%s]", s_stage_ssid);
                     break;
                 case 0x31:  //  1
                     // WiFi密码
                     // 判断是否只有单个指令字符 "1",无附加密码
                     if(str_len == 0)
                     {
+                        /* 无新密码: 直接用已存配置重连 (非阻塞) */
                         wifista_restart();
                     }
                     else
                     {
-                        memset(g_wifi_passwd, 0, PWD_MAX_LEN);
-                        strncpy(g_wifi_passwd, recv_buf, PWD_MAX_LEN - 1);
-                        ESP_LOGI(TAG, "获取 WiFi PWD: [%s]", g_wifi_passwd);
-                        wifi_nvs_save(g_wifi_ssid, g_wifi_passwd);
+                        memset(s_stage_pwd, 0, sizeof(s_stage_pwd));
+                        strncpy(s_stage_pwd, recv_buf, sizeof(s_stage_pwd) - 1);
+                        ESP_LOGI(TAG, "获取 WiFi PWD: ******");
+
+                        /* apply = NVS落盘 + 更新缓存 + 钩子异步触发重连,
+                         * 本回调(NimBLE host任务)不被重连慢序列阻塞 */
+                        esp_err_t ret = wifi_config_apply(s_stage_ssid, s_stage_pwd);
+                        if (ret != ESP_OK)
+                        {
+                            ESP_LOGE(TAG, "配网保存失败: %s", esp_err_to_name(ret));
+                        }
 
                         ble_gap_adv_stop();
                         ble_adv_active = false;
-                        wifista_restart();
                     }
                     break;
                 case 0x32:  //  2
-                    wifi_nvs_clear();
+                    wifi_config_clear();
+                    memset(s_stage_ssid, 0, sizeof(s_stage_ssid));
+                    memset(s_stage_pwd, 0, sizeof(s_stage_pwd));
                     esp_wifi_disconnect();
                     esp_wifi_stop();
                     break;
@@ -104,7 +118,7 @@ static int gatt_event_handler(uint16_t conn_handle, uint16_t attr_handle,struct 
             os_mbuf_append(ctxt->om, ble_str, strlen(ble_str));
             
             // 拼接WiFi状态
-            if(wifi_is_connected)
+            if(wifi_is_connected())
                 snprintf(wifi_str, sizeof(wifi_str), "WiFi:Online");
             else
                 snprintf(wifi_str, sizeof(wifi_str), "WiFi:Offline");
@@ -248,7 +262,7 @@ void host_task( void * arg)
 /**
  * @brief 蓝牙初始化
  */
-void ble_init(void)
+esp_err_t ble_init(void)
 {
     nimble_port_init();
     ble_svc_gap_init();
@@ -261,4 +275,5 @@ void ble_init(void)
 
     nimble_port_freertos_init(host_task);
     ESP_LOGI(TAG,"蓝牙初始化成功");
+    return ESP_OK;
 }
