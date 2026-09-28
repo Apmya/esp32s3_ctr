@@ -10,7 +10,7 @@ static const char *TAG = "MYNVS";
 
 
 /* 内部工具: 统一 open, 失败打日志 */
-static esp_err_t ns_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *h)
+static esp_err_t my_nvs_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *h)
 {
     if (ns == NULL || h == NULL)
     {
@@ -35,8 +35,7 @@ esp_err_t mynvs_init(void)
 {
     esp_err_t ret = nvs_flash_init();
 
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
         ESP_LOGW(TAG, "NVS分区需要擦除");
 
@@ -68,7 +67,7 @@ esp_err_t mynvs_save_string(const char *ns, const char *key, const char *value)
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READWRITE, &handle);
 
     if (ret != ESP_OK)
     {
@@ -97,7 +96,7 @@ esp_err_t mynvs_load_string(const char *ns, const char *key, char *value, size_t
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READONLY, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READONLY, &handle);
 
     if (ret != ESP_OK)
     {
@@ -123,7 +122,7 @@ esp_err_t mynvs_save_u32(const char *ns, const char *key, uint32_t value)
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READWRITE, &handle);
 
     if (ret != ESP_OK)
     {
@@ -152,7 +151,7 @@ esp_err_t mynvs_load_u32(const char *ns, const char *key, uint32_t *value)
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READONLY, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READONLY, &handle);
 
     if (ret != ESP_OK)
     {
@@ -176,7 +175,7 @@ esp_err_t mynvs_save_blob(const char *ns, const char *key, const void *data, siz
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READWRITE, &handle);
 
     if (ret != ESP_OK)
     {
@@ -205,7 +204,7 @@ esp_err_t mynvs_load_blob(const char *ns, const char *key, void *buf, size_t max
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READONLY, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READONLY, &handle);
 
     if (ret != ESP_OK)
     {
@@ -236,7 +235,7 @@ esp_err_t mynvs_delete_key(const char *ns, const char *key)
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+    esp_err_t ret = my_nvs_open(ns, NVS_READWRITE, &handle);
 
     if (ret != ESP_OK)
     {
@@ -265,7 +264,7 @@ esp_err_t mynvs_clear_namespace(const char *ns)
 
     nvs_handle_t handle;
 
-    esp_err_t ret = ns_open(ns, NVS_READWRITE, &handle);
+    esp_err_t ret = nvs_open(ns, NVS_READWRITE, &handle);
 
     if (ret != ESP_OK)
     {

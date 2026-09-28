@@ -1,13 +1,9 @@
 #ifndef __MYNTC_H
 #define __MYNTC_H
 
-#include <stdint.h>
-#include "driver/adc.h"
-#include "board.h"     /* NTC_PIN / NTC_ADC_CHANNEL 唯一来源 */
-
 /* ═══════════════ NTC 硬件电路参数 (按实际硬件修改) ═══════════════
  * 电路: VCC ── 10.5kΩ固定电阻 ──┬── NTC(10kΩ@25°C, B=3950) ── GND
- *                            └── 电压跟随器 ── RC滤波 ── ADC(引脚见 board.h NTC_PIN)
+ *                              └── 电压跟随器 ── RC滤波 ── ADC
  * 注意: ADC 引脚/通道 已收编至 board.h, 本头文件不再定义 */
 
 #define NTC_R_FIXED         10500.0f        /* 分压固定电阻 (Ω) */

@@ -2,14 +2,14 @@
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 
-#include "iic.h"
+#include "myi2c.h"
 #include "ina219.h"
-#include "board.h"
+#include "myboard.h"
 
 
-#define TAG     "IIC"
+#define TAG     "I2C"
 
-void iic_init(void)
+void i2c_init(void)
 {
     i2c_config_t i2c_structure = {
         .clk_flags = 0,
@@ -59,10 +59,10 @@ void i2c_scan_bus(void)
     ESP_LOGI("I2C_SCAN", "====== 扫描结束 ======");
 }
 
-void iic_dev_start(void)
+void i2c_dev_start(void)
 {
-    iic_init();
+    i2c_init();
     i2c_scan_bus();
     INA219_init();
-    ESP_LOGI(TAG,"IIC设备初始化成功");
+    ESP_LOGI(TAG,"I2C设备初始化成功");
 }

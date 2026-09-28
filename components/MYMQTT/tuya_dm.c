@@ -6,14 +6,14 @@
 #include <string.h>
 #include <sys/time.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "myvalve.h"
 #include "tuya_dm.h"
 #include "telemetry.h"
 #include "led_ws2812.h"
-#include "board.h"
+#include "myboard.h"
 #include "tuya_mqtt.h"
-#include "esp_timer.h"
 
 #define TAG  "tuya_dm"
 
@@ -170,8 +170,7 @@ static void valve_measure_task(void *arg)
         s_measure_valid = false;
         xSemaphoreGive(cur_str_mutex);
 
-        esp_err_t ret = ina219_measure_valve_current(&m,
-                                                      valve_open, valve_close);
+        esp_err_t ret = ina219_measure_valve_current(&m,valve_on ,relay_close_all);
         if (ret == ESP_OK) {
             /* 有效性门控: VBUS<5V 说明采样电阻/24V供电未接入,
              * INA219 测量值全是噪声, 不上报 IP/IH/TP/Period/Duty */
@@ -242,13 +241,12 @@ void tuya_dm_init(void)
     ws2812_init(WS2812_PIN, 1, &ws2812_led);
     led_indicate(128, 0, 0);  /* 红灯=阀门关 */
 
-    xTaskCreatePinnedToCore(valve_measure_task, "valve_meas",
-                             6144, NULL, 6, &valve_meas_hdl, 1);
+    xTaskCreatePinnedToCore(valve_measure_task, "valve_meas",6144, NULL, 6, &valve_meas_hdl, 1);
+
     cur_str_mutex = xSemaphoreCreateMutex();
 
     /* 上报任务: 接管全部 JSON组包+MQTT发布 (低优先级, esp_timer回调只做notify) */
-    xTaskCreatePinnedToCore(dm_report_task, "dm_report",
-                            8192, NULL, 5, &s_report_task, 1);
+    xTaskCreatePinnedToCore(dm_report_task, "dm_report",8192, NULL, 5, &s_report_task, 1);
 
     /* 开关ON 4s后上报电参数状态: 一次性定时器, 由 switch 下发启动/取消 */
     esp_timer_create_args_t targs = {

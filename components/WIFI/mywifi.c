@@ -20,6 +20,8 @@
  * 调用方(BLE host/httpd等)只发通知, µs级返回, 绝不阻塞网络协议栈任务 */
 #define RESTART_TASK_STACK  6144
 #define RESTART_TASK_PRIO   5
+#define SCAN_TASK_STACK  8192
+#define SCAN_TASK_PRIO   3
 
 static const char* ap_ssid_name = "ESP32S3-AP";
 static const char* ap_password = "12345678";
@@ -251,11 +253,6 @@ void wifista_restart(void)
 
 /**
  * @brief 打开STA+AP (AP配网入口)
- *
- * ★ 修复AP"开而不可见": 依据 esp_wifi.h @attention 1
- *   ("set_config 只对已使能的接口生效, 否则失败/丢弃"), 旧顺序先写AP配置
- *   后切模式, 且返回值从未检查 —— 一旦静默失败, softAP 即以空SSID广播,
- *   手机列表自然找不到 ESP32S3-AP。现改为规范序列:
  *   stop → set_mode(使能AP) → set_config → start, 全程检查返回值并回读自检。
  */
 esp_err_t wifiap_sta_start(void)
@@ -267,10 +264,11 @@ esp_err_t wifiap_sta_start(void)
         return ESP_OK;
     }
 
-    wifi_config_t ap_cfg = {0};
-    ap_cfg.ap.channel        = 5;
-    ap_cfg.ap.max_connection = 2;
-    ap_cfg.ap.authmode       = WIFI_AUTH_WPA2_PSK;
+    wifi_config_t ap_cfg = {
+        .ap.channel        = 5,
+        .ap.max_connection = 2,
+        .ap.authmode       = WIFI_AUTH_WPA2_PSK,
+    };
     strncpy((char *)ap_cfg.ap.ssid, ap_ssid_name, sizeof(ap_cfg.ap.ssid) - 1);
     ap_cfg.ap.ssid_len = strlen(ap_ssid_name);
     strncpy((char *)ap_cfg.ap.password, ap_password, sizeof(ap_cfg.ap.password) - 1);
@@ -331,8 +329,7 @@ static void scan_task(void* param)
 
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "扫描启动失败: %s, 剩余堆%u",
-                 esp_err_to_name(ret), (unsigned)xPortGetFreeHeapSize());
+        ESP_LOGE(TAG, "扫描启动失败: %s, 剩余堆%u",esp_err_to_name(ret), (unsigned)xPortGetFreeHeapSize());
     }
     else
     {
@@ -361,7 +358,7 @@ esp_err_t wifiap_scan(p_wifi_scan_cb f)
 
     esp_wifi_clear_ap_list();
 
-    BaseType_t ok = xTaskCreatePinnedToCore(scan_task,"scan",8192,f,3,NULL,1);
+    BaseType_t ok = xTaskCreatePinnedToCore(scan_task,"scan",SCAN_TASK_STACK,f,SCAN_TASK_PRIO,NULL,1);
     if (ok != pdPASS)
     {
         /* 关键修复: 创建失败必须归还令牌, 否则扫描功能被永久禁死(且此前静默) */

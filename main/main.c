@@ -43,7 +43,7 @@
 #include "mynvs.h"        /* 装配根: 仅用于底层存储初始化 */
 #include "wifi_config.h"
 
-#include "iic.h"
+#include "myi2c.h"
 #include "myntc.h"
 #include "telemetry.h"
 #include "myvalve.h"
@@ -73,11 +73,13 @@ void app_main(void)
     }
 
     /* ── 阶段4: 驱动与外设初始化 ───────────────────────── */
-    iic_dev_start();                        /* I2C总线 + INA219 */
+    i2c_dev_start();                        /* I2C总线 + INA219 */
     ntc_init();                             /* NTC: 引脚/通道见 board.h */
-    valve_init();                           /* 电磁阀 GPIO9 */
+    valve_init();                           /* 电磁阀  */
     ESP_ERROR_CHECK(key_init());            /* KEY1~5 输入+消抖任务 */
-    /* TODO(你): lcd_init(); 屏幕驱动完成后加入本阶段 */
+
+    lcd_init(); //屏幕驱动完成后加入本阶段 
+    key_init(); //屏幕驱动完成后加入本阶段
 
     /* ── 阶段5: 业务服务装配 (顺序 = 依赖顺序) ─────────── */
     ap_wifi_init();            /* wifista+AP+WS, 注册 wifi_config apply 钩子 */
@@ -86,11 +88,9 @@ void app_main(void)
     ap_wifi_watch_start();     /* 配网策略环: 断网开AP, 连网关AP */
     tuya_lifecycle_start();    /* MQTT生命周期环: 联网起MQTT, 断连销毁 */
 
-    /* BLE 最后开: 手机连上即可写特征值配网, 此时全部依赖已就绪;
-     * (原 ble_task 的 init+空转延时循环已删 — 属无效任务) */
+    /* BLE 最后开: 手机连上即可写特征值配网, 此时全部依赖已就绪;*/
     ESP_ERROR_CHECK(ble_init());
 
     ESP_LOGI(TAG, "系统装配完成");
 
-    /* app_main 返回后其任务栈会被系统回收, 常驻工作全部在上面的模块任务中 */
 }

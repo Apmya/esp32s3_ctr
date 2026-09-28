@@ -7,7 +7,7 @@
 #include "esp_check.h"
 
 #include "key.h"
-#include "board.h"
+#include "myboard.h"
 
 #define TAG "KEY"
 
@@ -133,14 +133,10 @@ esp_err_t key_init(void)
     for (int i = 0; i < KEY_NUM; i++)
     {
         /* arg 传键索引, ISR 内只处理触发的这个键 */
-        ESP_RETURN_ON_ERROR(gpio_isr_handler_add(s_key_gpio[i], key_isr_handler,
-                                                 (void *)(intptr_t)i),
-                            TAG, "按键中断注册失败");
+        ESP_RETURN_ON_ERROR(gpio_isr_handler_add(s_key_gpio[i], key_isr_handler,(void *)(intptr_t)i),TAG, "按键中断注册失败");
     }
 
-    BaseType_t ok = xTaskCreatePinnedToCore(key_task, "key",
-                                            KEY_TASK_STACK, NULL,
-                                            KEY_TASK_PRIO, &s_key_task, 1);
+    BaseType_t ok = xTaskCreatePinnedToCore(key_task, "key",KEY_TASK_STACK, NULL,KEY_TASK_PRIO, &s_key_task, 1);
     if (ok != pdPASS)
     {
         return ESP_ERR_NO_MEM;

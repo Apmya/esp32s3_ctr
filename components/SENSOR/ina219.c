@@ -1,14 +1,15 @@
-#include "ina219.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c.h"
 #include "driver/gpio.h"
-#include "iic.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_err.h"
 #include "string.h"
 #include "math.h"
+
+#include "myi2c.h"
+#include "ina219.h"
 
 static const char *TAG = "INA219";
 
@@ -235,9 +236,7 @@ static int64_t ina_interp_cross_us(const ina_rec_t *a, const ina_rec_t *b, float
     return a->t_us + (int64_t)((float)(b->t_us - a->t_us) * k);
 }
 
-esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
-                                        void (*valve_open_func)(void),
-                                        void (*valve_close_func)(void))
+esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,void (*valve_open_func)(void),void (*valve_close_func)(void))
 {
     if (res == NULL || valve_open_func == NULL || valve_close_func == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -262,8 +261,7 @@ esp_err_t ina219_measure_valve_current(ina219_valve_curr_t *res,
     /* 关阀基线: 判断 24V 供电是否到测量点 */
     float vbus_off = ina219_get_bus_voltage();
     float i_base = ina219_get_current();
-    ESP_LOGI(TAG, "[诊断] 关阀基线: VBUS=%.2fV I=%.3fA P=%.2fW",
-             vbus_off, i_base, ina219_get_power());
+    ESP_LOGI(TAG, "[诊断] 关阀基线: VBUS=%.2fV I=%.3fA P=%.2fW",vbus_off, i_base, ina219_get_power());
     if (vbus_off < 5.0f) {
         ESP_LOGW(TAG, "[诊断] VBUS过低(<5V), 24V供电可能未到INA219测量点!");
     }

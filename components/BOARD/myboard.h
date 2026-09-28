@@ -1,8 +1,7 @@
 #pragma once
 
-#include "driver/gpio.h"
-#include "driver/spi_master.h"
-#include "driver/i2c_master.h"
+#ifndef __BOARD_H__
+#define __BOARD_H__
 
 /* =========================================================
  * LCD SPI
@@ -16,6 +15,16 @@
 #define LCD_PIN_RESET       GPIO_NUM_44
 #define LCD_PIN_LED         GPIO_NUM_41
 
+
+/* =========================================================
+ * Touch
+ * ========================================================= */
+
+#define TOUCH_IRQ_PIN       GPIO_NUM_35
+#define TOUCH_DO_PIN        GPIO_NUM_36
+#define TOUCH_DIN_PIN       GPIO_NUM_37
+#define TOUCH_CS_PIN        GPIO_NUM_38
+#define TOUCH_CLK_PIN       GPIO_NUM_39
 
 /* =========================================================
  * I2C
@@ -34,13 +43,14 @@
 
 
 /* =========================================================
- * ADC
+ * ADC  74hc154
  * ========================================================= */
 
 #define A1_PIN          GPIO_NUM_18
 #define A2_PIN          GPIO_NUM_17
 #define A3_PIN          GPIO_NUM_16
 #define A4_PIN          GPIO_NUM_15
+
 #define A5_PIN          GPIO_NUM_7
 
 #define A6_PIN          GPIO_NUM_8
@@ -48,6 +58,7 @@
 #define A8_PIN          GPIO_NUM_46
 #define A9_PIN          GPIO_NUM_9
 
+#define EN_PIN          GPIO_NUM_0
 
 /* =========================================================
  * WS2812 状态灯 (RMT 数据线)
@@ -68,23 +79,12 @@
 
 
 /* =========================================================
- * External IO
+ * 74HC165 输入扩展芯片 
  * ========================================================= */
 
 #define IO_DATA_PIN         GPIO_NUM_19
 #define IO_CLK_PIN          GPIO_NUM_20
 #define IO_LATCH_PIN        GPIO_NUM_21
-
-
-/* =========================================================
- * Touch
- * ========================================================= */
-
-#define TOUCH_IRQ_PIN       GPIO_NUM_35
-#define TOUCH_DO_PIN        GPIO_NUM_36
-#define TOUCH_DIN_PIN       GPIO_NUM_37
-#define TOUCH_CS_PIN        GPIO_NUM_38
-#define TOUCH_CLK_PIN       GPIO_NUM_39
 
 
 /* =========================================================
@@ -96,3 +96,4 @@
 #define LED_G_PIN           GPIO_NUM_48
 
 
+#endif /* __BOARD_H__ */

@@ -1,7 +1,9 @@
-#include "myntc.h"
 #include "driver/adc.h"
 #include "esp_log.h"
 #include <math.h>
+
+#include "myntc.h"
+#include "myboard.h"
 
 static const char *TAG = "MYNTC";
 

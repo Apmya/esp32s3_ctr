@@ -53,9 +53,7 @@ esp_err_t wifi_config_load(void)
     wifi_cred_t local;
     memset(&local, 0, sizeof(local));
 
-    esp_err_t ret = mynvs_load_string(
-        WIFI_NVS_NAMESPACE, WIFI_NVS_KEY_SSID,
-        local.ssid, sizeof(local.ssid));
+    esp_err_t ret = mynvs_load_string(WIFI_NVS_NAMESPACE, WIFI_NVS_KEY_SSID,local.ssid, sizeof(local.ssid));
 
     if (ret != ESP_OK)
     {

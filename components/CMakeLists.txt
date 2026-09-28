@@ -2,7 +2,7 @@ set(src_dirs
             LED
             VALUE
             SENSOR
-            IIC
+            I2C
             MYMQTT
             MYNVS
             WIFI
@@ -15,7 +15,7 @@ set(include_dirs
             BOARD
             LED
             VALUE
-            IIC
+            I2C
             SENSOR
             MYMQTT
             MYNVS
