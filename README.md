@@ -19,49 +19,21 @@ Below is short explanation of remaining files in the project folder.
 ├── main
 │   ├── CMakeLists.txt
 │   └── main.c
-└── components/
-    │
+├── html
+|   └──apcfg.html
+└── components/|    │
     ├── valve/
-    │   ├── CMakeLists.txt
-    │   ├── valve.c
-    │   └── include/
-    │       └── valve.h
-    │
-    ├── decoder/
-    │   ├── CMakeLists.txt
-    │   ├── decoder.c
-    │   └── include/
-    │       └── decoder.h
-    │
-    ├── shift_register/
-    │   ├── CMakeLists.txt
-    │   ├── shift_register.c
-    │   └── include/
-    │       └── shift_register.h
-    │
-    ├── current_sensor/
-    │   ├── CMakeLists.txt
-    │   ├── current_sensor.c
-    │   └── include/
-    │       └── current_sensor.h
-    │
-    ├── display/
-    │
-    ├── touch/
-    │
+    ├── ap_wifi/
+    ├── board/
+    ├── i2c/
+    ├── led/
+    ├── screen/
     ├── key/
-    │
+    ├── mynvs/
     ├── wifi/
-    │
-    ├── bluetooth/
-    │
-    ├── wifi_provisioning/
-    │
-    ├── mqtt/
-    │
-    ├── storage/
-    │
-    └── ...
+    ├── ws_server/
+    ├── mymqtt/
+    └──sensor/
 └── README.md                  This is the file you are currently reading
 ```
 
